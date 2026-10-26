@@ -1,0 +1,23 @@
+{
+  "name": "swagger-docs-server",
+  "version": "1.0.0",
+  "description": "Standalone Swagger UI docs server with an MCP endpoint for editing the OpenAPI spec",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@apidevtools/swagger-parser": "10.1.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "cookie-session": "2.1.1",
+    "express": "4.22.3",
+    "openid-client": "6.8.8",
+    "swagger-ui-dist": "5.17.14",
+    "yaml": "2.9.1",
+    "zod": "4.6.6"
+  }
+}

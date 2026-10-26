@@ -1,0 +1,25 @@
+services:
+  swagger-docs:
+    build: .
+    container_name: swagger-docs
+    env_file: .env
+    ports:
+      # Optional: lets tools on this machine (e.g. Claude Code) reach the server at
+      # http://localhost:8080. Remove these two lines if you only use it through the tunnel.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # A directory, not a single file, so edits can be saved atomically.
+      # Put this folder under Git to keep a history of every spec change.
+      - ./spec:/data
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.1
+    container_name: swagger-docs-tunnel
+    command: tunnel --no-autoupdate run
+    # Kept in its own file so the docs server never sees the tunnel token.
+    env_file: tunnel.env
+    depends_on:
+      swagger-docs:
+        condition: service_healthy
+    restart: unless-stopped

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Docs</title>
+  <link rel="stylesheet" href="/swagger-ui/swagger-ui.css">
+  <style>
+    body { margin: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem 1.5rem;
+      padding: .5rem 1.25rem; font: 14px system-ui, sans-serif; color: #3b4151; border-bottom: 1px solid #e5e7eb; }
+    .toolbar a { color: #0969da; text-decoration: none; }
+    .toolbar a:hover { text-decoration: underline; }
+    .toolbar .group { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+    .toolbar .label { color: #57606a; }
+    #account[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="group">
+      <span class="label">Download:</span>
+      <a href="/openapi.yaml?download" title="OpenAPI spec as YAML">openapi.yaml</a>
+      <a href="/openapi.json?download" title="OpenAPI spec as JSON">openapi.json</a>
+      <a href="/export/docs.html" title="Single HTML file that works offline">Offline HTML</a>
+    </div>
+    <div class="group" id="account" hidden>
+      <span>Signed in as <strong id="account-name"></strong></span>
+      <a href="/auth/logout">Sign out</a>
+    </div>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="/swagger-ui/swagger-ui-bundle.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

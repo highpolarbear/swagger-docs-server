@@ -1,0 +1,38 @@
+# Starter spec. Edit by hand or ask Claude to add routes through the MCP tools.
+openapi: 3.0.3
+info:
+  title: My API
+  version: 0.1.0
+  description: Design-first API specification. Routes are defined here before they are built.
+servers:
+  - url: http://localhost:8081
+    description: Local Spring Boot app
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+components:
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: NOT_FOUND
+        message:
+          type: string
+          example: The requested resource does not exist
