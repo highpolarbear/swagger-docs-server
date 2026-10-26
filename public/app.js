@@ -15,3 +15,13 @@ fetch("/auth/me", { credentials: "same-origin" })
     document.getElementById("account").hidden = false;
   })
   .catch(function () {});
+
+// Stub generation takes a few seconds; show that something is happening.
+document.getElementById("stubs-link").addEventListener("click", function (e) {
+  var link = e.currentTarget;
+  if (link.dataset.busy) { e.preventDefault(); return; }
+  link.dataset.busy = "1";
+  var label = link.textContent;
+  link.textContent = "Generating stubs\u2026";
+  setTimeout(function () { link.textContent = label; delete link.dataset.busy; }, 8000);
+});

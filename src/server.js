@@ -10,7 +10,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { SpecStore } from "./spec-store.js";
 import { buildMcpServer } from "./mcp-tools.js";
 import { setupAuth } from "./auth.js";
-import { registerExportRoutes } from "./exports.js";
+import { registerExportRoutes, baseName } from "./exports.js";
+import { registerStubRoutes } from "./stubs.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT ?? 8080);
@@ -102,6 +103,7 @@ app.use((_req, res, next) => {
 });
 
 registerExportRoutes(app, store);
+registerStubRoutes(app, store, { baseName });
 // Serve only the two Swagger UI files the page uses, not the whole package
 // (which includes a demo page that loads the public Petstore example).
 const uiDir = swaggerUiDist.getAbsoluteFSPath();

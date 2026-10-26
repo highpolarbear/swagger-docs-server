@@ -8,6 +8,7 @@ A standalone, design-first API docs server. One container serves:
 | `/openapi.yaml` | The spec as YAML (`?download` saves it as a file) | Nextcloud sign-in, or `SPEC_READ_TOKEN` |
 | `/openapi.json` | The spec as JSON (`?download` saves it as a file) | Nextcloud sign-in, or `SPEC_READ_TOKEN` |
 | `/export/docs.html` | Single-file offline copy of the docs          | Nextcloud sign-in            |
+| `/export/spring-stubs.zip` | Generated Spring interfaces and models | Nextcloud sign-in            |
 | `/mcp`          | MCP endpoint so Claude can read and edit the spec | `MCP_TOKEN`                  |
 | `/auth/logout`  | Sign out                                          |                              |
 | `/healthz`      | Health check                                      | Public (returns `{"ok":true}` only) |
@@ -123,11 +124,17 @@ saved; invalid edits are rejected and the file is left untouched.
 
 ## Exporting
 
-The bar at the top of the docs page has three downloads:
+The bar at the top of the docs page has four downloads:
 
 - **openapi.yaml** and **openapi.json**: the standard OpenAPI 3.0 spec, importable into
   Postman, Insomnia, Redoc, Stoplight, openapi-generator, or any other OpenAPI tool.
   Files are named from the spec's title and version, e.g. `my-api-0.1.0.yaml`.
+- **Spring stubs (.zip)**: Spring Boot 3 code generated from the current spec with
+  openapi-generator: one controller interface per tag (e.g. `AuthApi`) and a class for every
+  request and response model, plus a README and the exact spec they came from. The README also
+  contains the matching `openapi-generator-maven-plugin` configuration, so your project's own
+  build generates identical code. Set the Java package with `STUBS_BASE_PACKAGE` in `.env`.
+  The first download after a spec change takes a few seconds; repeats are instant.
 - **Offline HTML**: one self-contained HTML file with Swagger UI and the spec built in. It opens
   from a file or email attachment with no server, internet connection or sign-in, so treat it as
   you would the spec itself before sharing it outside your team.

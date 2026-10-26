@@ -13,7 +13,7 @@ const loadUiAssets = async () =>
   });
 
 // "My API" + "0.1.0" -> "my-api-0.1.0"
-function baseName(spec) {
+export function baseName(spec) {
   const slug = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
   return [slug(spec?.info?.title) || "openapi", slug(spec?.info?.version)].filter(Boolean).join("-");
 }
