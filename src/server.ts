@@ -1,7 +1,7 @@
-// Swagger UI at /, spec at /openapi.yaml and /openapi.json, offline export at /export/docs.html
-// (all behind Nextcloud sign-in),
+// Swagger UI at /, spec at /openapi.yaml and /openapi.json, offline export at /export/docs.html,
+// TypeScript stubs at /export/ts-stubs.zip (all behind sign-in, unless AUTH_MODE=none),
 // MCP endpoint at /mcp (behind its own token).
-import express from "express";
+import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,9 +10,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { SpecStore } from "./spec-store.js";
 import { buildMcpServer } from "./mcp-tools.js";
 import { setupAuth } from "./auth.js";
-import { registerExportRoutes, baseName } from "./exports.js";
+import { registerExportRoutes } from "./exports.js";
 import { registerStubRoutes } from "./stubs.js";
 
+// Compiled code runs from dist/, sources from src/; both sit one level below the project root.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT ?? 8080);
 const SPEC_PATH = process.env.SPEC_PATH ?? path.join(root, "data", "openapi.yaml");
@@ -49,22 +50,22 @@ app.use((_req, res, next) => {
 });
 
 // --- Public -------------------------------------------------------------
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/healthz", (_req, res) => void res.json({ ok: true }));
 
 // --- MCP (token auth, registered before the session middleware) -----------
-const safeEqual = (a, b) => {
+const safeEqual = (a: string, b: string) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 
 // Accepts `Authorization: Bearer <token>` or the token as a path segment (/mcp/<token>)
 // for clients that can't send custom headers.
-function requireMcpToken(req, res, next) {
+const requireMcpToken: RequestHandler = (req, res, next) => {
   const header = req.get("authorization") ?? "";
   const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (safeEqual(bearer, MCP_TOKEN) || safeEqual(req.params.token ?? "", MCP_TOKEN)) return next();
   res.status(401).json({ jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized" }, id: null });
-}
+};
 
 const mcpPaths = ["/mcp", "/mcp/:token"];
 
@@ -73,8 +74,8 @@ app.post(mcpPaths, requireMcpToken, express.json({ limit: "2mb" }), async (req, 
   const server = buildMcpServer(store);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
-    transport.close();
-    server.close();
+    void transport.close();
+    void server.close();
   });
   try {
     await server.connect(transport);
@@ -91,7 +92,7 @@ app.all(mcpPaths, requireMcpToken, (_req, res) => {
   res.status(405).set("Allow", "POST").json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null });
 });
 
-// --- Docs (Nextcloud sign-in) ---------------------------------------------
+// --- Docs (sign-in, or the proxy's sign-in with AUTH_MODE=none) ------------
 const { requireLogin } = await setupAuth(app);
 app.use(requireLogin);
 
@@ -103,7 +104,7 @@ app.use((_req, res, next) => {
 });
 
 registerExportRoutes(app, store);
-registerStubRoutes(app, store, { baseName });
+registerStubRoutes(app, store);
 // Serve only the two Swagger UI files the page uses, not the whole package
 // (which includes a demo page that loads the public Petstore example).
 const uiDir = swaggerUiDist.getAbsoluteFSPath();
@@ -112,14 +113,15 @@ for (const file of ["swagger-ui.css", "swagger-ui-bundle.js"]) {
 }
 app.use(express.static(path.join(root, "public"), { cacheControl: false }));
 
-app.use((req, res) => res.status(404).type("text").send("Not found"));
+app.use((_req, res) => void res.status(404).type("text").send("Not found"));
 
 // Never send error details or stack traces to the client; they go to the log only.
-app.use((err, _req, res, _next) => {
-  const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+const onError: ErrorRequestHandler = (err, _req, res, _next) => {
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
   if (status === 500) console.error(err);
   res.status(status).type("text").send(status === 500 ? "Internal server error" : "Bad request");
-});
+};
+app.use(onError);
 
 app.listen(PORT, () => {
   console.log(`Swagger docs:  http://localhost:${PORT}/`);

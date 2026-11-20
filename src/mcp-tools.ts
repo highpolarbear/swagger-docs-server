@@ -1,11 +1,15 @@
 // MCP tools that let Claude read and edit the OpenAPI spec.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { HTTP_METHODS, SpecStore } from "./spec-store.js";
 
-const text = (t) => ({ content: [{ type: "text", text: t }] });
-const fail = (e) => ({ isError: true, content: [{ type: "text", text: `Error: ${e.message ?? e}` }] });
-const json = (v) => JSON.stringify(v, null, 2);
+const text = (t: string): CallToolResult => ({ content: [{ type: "text", text: t }] });
+const fail = (e: unknown): CallToolResult => ({
+  isError: true,
+  content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
+});
+const json = (v: unknown) => JSON.stringify(v, null, 2);
 
 const methodSchema = z.enum(HTTP_METHODS).describe("HTTP method, lowercase");
 const pathSchema = z
@@ -18,9 +22,9 @@ const INSTRUCTIONS = `This server holds the OpenAPI 3.0 specification for an API
 
 What design-first means here:
 - This spec is the single source of truth. The API does not exist yet, or is built afterwards to match the spec.
-- The backend is a Java Spring Boot application whose controller interfaces and model classes are GENERATED
-  from this spec with openapi-generator (spring generator, interfaceOnly, useTags). Developers then implement
-  those interfaces. So every change here becomes Java code.
+- The backend is a Node.js + Express application written in TypeScript. Its types, handler interfaces and
+  Express routers are GENERATED from this spec (one handler interface per tag), and developers implement those
+  interfaces. Requests are validated against this spec at runtime. So every change here becomes TypeScript code.
 - Never describe or "document" an existing implementation; you are designing the contract that will be built.
 
 How to work:
@@ -30,24 +34,32 @@ How to work:
    requestBody, every realistic response (success and errors), and examples where they help.
 3. Put reusable request/response bodies in components.schemas with upsert_schema, then reference them with
    {"$ref": "#/components/schemas/Name"} from upsert_route. Avoid repeating inline object definitions.
-4. Every operation needs a unique operationId in camelCase (e.g. getOrderById). It becomes the Java method name,
-   and tags become the generated interface names (tag "Orders" -> OrdersApi), so choose them deliberately.
+   Schema names become exported TypeScript type names, so use PascalCase (e.g. OrderSummary).
+4. Every operation needs a unique operationId in camelCase (e.g. getOrderById). It becomes the TypeScript
+   handler method name, and the first tag becomes the generated interface name (tag "Orders" -> OrdersApi),
+   so choose them deliberately. Name path parameters in camelCase with letters and digits only
+   (/orders/{orderId}, not /orders/{order-id}): Express route parameters can't contain hyphens.
 5. Changing or removing an existing route, field or schema breaks code that may already be generated and
    implemented. Point this out and get the user's confirmation before making breaking changes.
 6. Every write is validated; if a tool rejects a change, read the error, fix the input and retry.
 7. Afterwards, summarise what you added or changed so the user can review it in Swagger UI.`;
 
-export function buildMcpServer(store) {
-  const server = new McpServer({ name: "swagger-docs", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+export function buildMcpServer(store: SpecStore): McpServer {
+  const server = new McpServer({ name: "swagger-docs", version: "2.0.0" }, { instructions: INSTRUCTIONS });
 
-  const tool = (name, description, inputSchema, handler) =>
-    server.registerTool(name, { description, inputSchema }, async (args) => {
+  const tool = <S extends z.ZodRawShape>(
+    name: string,
+    description: string,
+    inputSchema: S,
+    handler: (args: z.infer<z.ZodObject<S>>) => Promise<CallToolResult>
+  ) =>
+    server.registerTool(name, { description, inputSchema }, (async (args: any) => {
       try {
         return await handler(args);
       } catch (e) {
         return fail(e);
       }
-    });
+    }) as any);
 
   tool("get_spec", "Return the full OpenAPI spec as YAML. Read this before planning larger changes.", {}, async () =>
     text(await store.readText())
@@ -55,8 +67,8 @@ export function buildMcpServer(store) {
 
   tool("list_routes", "List every route (method + path) with its summary and tags.", {}, async () => {
     const spec = await store.loadObject();
-    const rows = [];
-    for (const [p, item] of Object.entries(spec.paths ?? {})) {
+    const rows: string[] = [];
+    for (const [p, item] of Object.entries<any>(spec.paths ?? {})) {
       for (const m of HTTP_METHODS) {
         if (item?.[m]) {
           const op = item[m];
@@ -97,7 +109,8 @@ export function buildMcpServer(store) {
     await store.mutate((doc) => {
       if (!doc.hasIn(["paths", path, method])) throw new Error(`No route ${method.toUpperCase()} ${path}`);
       doc.deleteIn(["paths", path, method]);
-      const item = doc.getIn(["paths", path])?.toJSON?.() ?? {};
+      const node = doc.getIn(["paths", path]) as { toJSON?: () => Record<string, unknown> } | undefined;
+      const item = node?.toJSON?.() ?? {};
       if (!HTTP_METHODS.some((m) => item[m])) doc.deleteIn(["paths", path]);
     });
     return text(`Deleted ${method.toUpperCase()} ${path}.`);
@@ -134,7 +147,7 @@ export function buildMcpServer(store) {
         if (!doc.hasIn(["components", "schemas", name])) throw new Error(`No schema named ${name}`);
         doc.deleteIn(["components", "schemas", name]);
       })
-      .catch((e) => {
+      .catch((e: Error) => {
         if (/does not exist|validation failed/i.test(e.message)) {
           throw new Error(`Schema ${name} is still referenced elsewhere in the spec; remove those references first. (${e.message.trim()})`);
         }

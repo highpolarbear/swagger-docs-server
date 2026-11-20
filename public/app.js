@@ -7,21 +7,13 @@ window.ui = SwaggerUIBundle({
   validatorUrl: null // don't send the spec's address to validator.swagger.io
 });
 
+// Shows who is signed in: from this server's own sign-in, or from Pomerium when AUTH_MODE=none.
 fetch("/auth/me", { credentials: "same-origin" })
   .then(function (r) { return r.ok ? r.json() : null; })
   .then(function (me) {
     if (!me) return;
     document.getElementById("account-name").textContent = me.name;
+    if (me.logoutUrl) document.getElementById("account-logout").href = me.logoutUrl;
     document.getElementById("account").hidden = false;
   })
   .catch(function () {});
-
-// Stub generation takes a few seconds; show that something is happening.
-document.getElementById("stubs-link").addEventListener("click", function (e) {
-  var link = e.currentTarget;
-  if (link.dataset.busy) { e.preventDefault(); return; }
-  link.dataset.busy = "1";
-  var label = link.textContent;
-  link.textContent = "Generating stubs\u2026";
-  setTimeout(function () { link.textContent = label; delete link.dataset.busy; }, 8000);
-});

@@ -4,8 +4,8 @@ services:
     container_name: swagger-docs
     env_file: .env
     ports:
-      # Optional: lets tools on this machine (e.g. Claude Code) reach the server at
-      # http://localhost:8080. Remove these two lines if you only use it through the tunnel.
+      # Lets tools on this machine (e.g. Claude Code, or Pomerium running on the host) reach the
+      # server at http://localhost:8080. Remove these two lines if nothing on the host needs it.
       - "127.0.0.1:8080:8080"
     volumes:
       # A directory, not a single file, so edits can be saved atomically.
@@ -13,12 +13,17 @@ services:
       - ./spec:/data
     restart: unless-stopped
 
+  # Cloudflare Tunnel. Started only when TUNNEL_TOKEN in .env is set: with an empty token this
+  # service runs 0 copies, so `docker compose up` doesn't start it (and removes it if it was running).
   cloudflared:
     image: cloudflare/cloudflared:2026.10.1
     container_name: swagger-docs-tunnel
     command: tunnel --no-autoupdate run
-    # Kept in its own file so the docs server never sees the tunnel token.
-    env_file: tunnel.env
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    deploy:
+      # "0" when TUNNEL_TOKEN is empty, "01" (one copy) when it is set.
+      replicas: 0${TUNNEL_TOKEN:+1}
     depends_on:
       swagger-docs:
         condition: service_healthy

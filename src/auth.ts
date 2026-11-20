@@ -1,31 +1,31 @@
-// Login for the docs pages through Nextcloud.
+// Login for the docs pages.
 //
-// AUTH_MODE=oidc              Nextcloud with the "OIDC Identity Provider" app (recommended).
+// AUTH_MODE=oidc              Nextcloud with the "OIDC Identity Provider" app.
 // AUTH_MODE=nextcloud-oauth2  Nextcloud's built-in OAuth 2.0 (no app needed). The access token
 //                             it issues can reach the whole account, so it is used once to read
 //                             the user's identity and is never stored.
-// AUTH_MODE=none              No login. Only for local development.
+// AUTH_MODE=none              No login in this server. Use it behind an authenticating proxy such as
+//                             Pomerium, which signs people in before a request ever gets here.
 import crypto from "node:crypto";
+import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import cookieSession from "cookie-session";
 import * as oidc from "openid-client";
+import { escapeHtml } from "./exports.js";
 
-const env = (name, fallback = "") => (process.env[name] ?? fallback).trim();
-const list = (name) => env(name).split(",").map((s) => s.trim()).filter(Boolean);
+const env = (name: string, fallback = "") => (process.env[name] ?? fallback).trim();
+const list = (name: string) => env(name).split(",").map((s) => s.trim()).filter(Boolean);
 
-function safeEqual(a, b) {
+function safeEqual(a: unknown, b: unknown): boolean {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-function die(message) {
+function die(message: string): never {
   console.error(`Auth configuration error: ${message}`);
   process.exit(1);
 }
 
-const escapeHtml = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-
-function page(res, status, title, body) {
+function page(res: Response, status: number, title: string, body: string): void {
   res
     .status(status)
     .type("html")
@@ -36,7 +36,7 @@ function page(res, status, title, body) {
 
 // Only allow redirects back to a path on this site. The URL parser treats a backslash as "/" just
 // like browsers do, which catches tricks such as "/\evil.com" that a browser reads as "//evil.com".
-function safeReturnTo(value) {
+function safeReturnTo(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/") || /[\\\u0000-\u001f]/.test(value)) return "/";
   try {
     const url = new URL(value, "http://same-origin.invalid");
@@ -47,16 +47,78 @@ function safeReturnTo(value) {
   }
 }
 
-export async function setupAuth(app) {
+// The identity Pomerium forwards, for display only ("Signed in as ..."). Pomerium has already
+// decided who may reach this server; nothing here is used to grant or refuse access, so the
+// JWT is decoded without checking its signature.
+function pomeriumIdentity(req: Request): { id: string; name: string } | null {
+  let claims: Record<string, unknown> = {};
+  const jwt = req.get("x-pomerium-jwt-assertion");
+  if (jwt) {
+    try {
+      claims = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
+    } catch {
+      claims = {};
+    }
+  }
+  const pick = (...values: unknown[]) => values.find((v) => typeof v === "string" && v.trim()) as string | undefined;
+  const email = pick(claims.email, req.get("x-pomerium-claim-email"));
+  const name = pick(claims.name, req.get("x-pomerium-claim-name"));
+  const id = pick(email, claims.user, claims.sub, req.get("x-pomerium-claim-user"));
+  if (!id) return null;
+  return { id: id.slice(0, 200), name: (name ?? id).slice(0, 200) };
+}
+
+interface SessionUser {
+  id: string;
+  name: string;
+  exp: number;
+}
+
+interface Pending {
+  state: string;
+  returnTo: string;
+  started: number;
+  verifier?: string;
+  nonce?: string;
+}
+
+interface UserInfo {
+  id: string;
+  name: string;
+  email: string | null;
+  groups: string[] | null;
+}
+
+interface Provider {
+  start(pending: Pending): Promise<string>;
+  finish(req: Request, pending: Pending): Promise<UserInfo>;
+}
+
+export async function setupAuth(app: Express): Promise<{ requireLogin: RequestHandler }> {
   const mode = env("AUTH_MODE", "oidc");
   const specReadToken = env("SPEC_READ_TOKEN");
   if (specReadToken && specReadToken.length < 24) die("SPEC_READ_TOKEN must be at least 24 characters.");
 
   if (mode === "none") {
-    console.warn("WARNING: AUTH_MODE=none. Anyone who can reach this server can read the docs.");
+    console.warn(
+      "AUTH_MODE=none: this server does not ask anyone to sign in. Only expose it through an authenticating " +
+        "proxy such as Pomerium, and keep its port unreachable from anywhere else."
+    );
+    if (env("TUNNEL_TOKEN")) {
+      console.warn(
+        "WARNING: AUTH_MODE=none and TUNNEL_TOKEN is set, so the Cloudflare Tunnel publishes these docs without " +
+          "sign-in unless Cloudflare Access protects the hostname."
+      );
+    }
+    app.get("/auth/me", (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const who = pomeriumIdentity(req);
+      if (!who) return void res.status(404).json({ error: "No signed-in identity" });
+      res.json({ ...who, logoutUrl: "/.pomerium/sign_out" });
+    });
     return { requireLogin: (_req, _res, next) => next() };
   }
-  if (!["oidc", "nextcloud-oauth2"].includes(mode)) die(`Unknown AUTH_MODE "${mode}".`);
+  if (!["oidc", "nextcloud-oauth2"].includes(mode)) die(`Unknown AUTH_MODE "${mode}". Use oidc, nextcloud-oauth2 or none.`);
 
   // ---- Configuration ----------------------------------------------------------
   const publicUrl = env("PUBLIC_URL").replace(/\/+$/, "");
@@ -82,12 +144,12 @@ export async function setupAuth(app) {
   const redirectUri = `${publicUrl}/auth/callback`;
 
   // ---- Provider-specific login ------------------------------------------------
-  let provider;
+  let provider: Provider;
   if (mode === "oidc") {
     const issuer = env("OIDC_ISSUER", nextcloudUrl);
     const scope = env("OIDC_SCOPES", "openid profile email");
     const insecure = issuer.startsWith("http://");
-    let config;
+    let config: oidc.Configuration;
     try {
       config = await oidc.discovery(
         new URL(issuer),
@@ -97,7 +159,7 @@ export async function setupAuth(app) {
         insecure ? { execute: [oidc.allowInsecureRequests] } : undefined
       );
     } catch (e) {
-      die(`OIDC discovery failed for ${issuer} (${e.message}). Is the OIDC Identity Provider app installed? ` +
+      die(`OIDC discovery failed for ${issuer} (${(e as Error).message}). Is the OIDC Identity Provider app installed? ` +
         `If your Nextcloud URLs contain /index.php, try OIDC_ISSUER=${issuer}/index.php`);
     }
     if (insecure) oidc.allowInsecureRequests(config);
@@ -122,13 +184,13 @@ export async function setupAuth(app) {
           expectedNonce: pending.nonce,
           idTokenExpected: true,
         });
-        let claims = tokens.claims();
+        let claims: Record<string, any> = tokens.claims() ?? {};
         try {
           claims = { ...claims, ...(await oidc.fetchUserInfo(config, tokens.access_token, claims.sub)) };
         } catch {
           // Userinfo is optional; the ID token is enough.
         }
-        const groups = Array.isArray(claims.groups) ? claims.groups : null;
+        const groups = Array.isArray(claims.groups) ? claims.groups.map(String) : null;
         return {
           id: String(claims.preferred_username ?? claims.sub),
           name: String(claims.name ?? claims.preferred_username ?? claims.sub),
@@ -145,7 +207,7 @@ export async function setupAuth(app) {
     provider = {
       async start(pending) {
         const url = new URL(authorizeUrl);
-        url.search = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, state: pending.state });
+        url.search = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, state: pending.state }).toString();
         return url.href;
       },
       async finish(req, pending) {
@@ -163,27 +225,27 @@ export async function setupAuth(app) {
           }),
         });
         if (!tokenRes.ok) throw new Error(`Token request failed with HTTP ${tokenRes.status}`);
-        const { access_token: accessToken } = await tokenRes.json();
+        const { access_token: accessToken } = (await tokenRes.json()) as { access_token?: string };
         if (!accessToken) throw new Error("No access token in response");
 
         const userRes = await fetch(userUrl, {
           headers: { Authorization: `Bearer ${accessToken}`, "OCS-APIRequest": "true", Accept: "application/json" },
         });
         if (!userRes.ok) throw new Error(`User lookup failed with HTTP ${userRes.status}`);
-        const data = (await userRes.json())?.ocs?.data;
+        const data = ((await userRes.json()) as any)?.ocs?.data;
         if (!data?.id) throw new Error("User lookup returned no user id");
         // The access token goes out of scope here and is never stored.
         return {
           id: String(data.id),
           name: String(data.displayname ?? data["display-name"] ?? data.id),
           email: data.email ?? null,
-          groups: Array.isArray(data.groups) ? data.groups : null,
+          groups: Array.isArray(data.groups) ? data.groups.map(String) : null,
         };
       },
     };
   }
 
-  function isAllowed(user) {
+  function isAllowed(user: UserInfo): boolean {
     if (!allowedUsers.length && !allowedGroups.length) return true;
     if (allowedUsers.includes(user.id)) return true;
     return (user.groups ?? []).some((g) => allowedGroups.includes(g));
@@ -197,7 +259,7 @@ export async function setupAuth(app) {
   // missing on a request from a trusted proxy while PUBLIC_URL is HTTPS, assume HTTPS so the
   // Secure login cookie can still be set. Requests from untrusted addresses are left alone.
   if (secure) {
-    const trusted = app.get("trust proxy fn");
+    const trusted = app.get("trust proxy fn") as (addr: string | undefined, i: number) => boolean;
     app.use((req, _res, next) => {
       if (!req.headers["x-forwarded-proto"] && trusted(req.socket.remoteAddress, 0)) {
         req.headers["x-forwarded-proto"] = "https";
@@ -223,17 +285,17 @@ export async function setupAuth(app) {
     })
   );
 
-  const currentUser = (req) => {
-    const u = req.session?.user;
+  const currentUser = (req: Request): SessionUser | null => {
+    const u = req.session?.user as SessionUser | undefined;
     return u && u.exp > Date.now() ? u : null;
   };
 
   // ---- Routes -----------------------------------------------------------------
   app.get("/auth/login", async (req, res, next) => {
     try {
-      const pending = { state: oidc.randomState(), returnTo: safeReturnTo(req.query.returnTo), started: Date.now() };
+      const pending: Pending = { state: oidc.randomState(), returnTo: safeReturnTo(req.query.returnTo), started: Date.now() };
       const url = await provider.start(pending);
-      req.session.pending = pending;
+      req.session!.pending = pending;
       res.redirect(url);
     } catch (e) {
       next(e);
@@ -241,16 +303,16 @@ export async function setupAuth(app) {
   });
 
   app.get("/auth/callback", async (req, res) => {
-    const pending = req.session?.pending;
-    req.session.pending = null;
+    const pending = req.session?.pending as Pending | null | undefined;
+    req.session!.pending = null;
     if (!pending || Date.now() - pending.started > 10 * 60 * 1000) {
       return page(res, 400, "Sign-in expired", `<p>That sign-in attempt expired. <a href="/auth/login">Try again</a>.</p>`);
     }
-    let user;
+    let user: UserInfo;
     try {
       user = await provider.finish(req, pending);
     } catch (e) {
-      console.error("Sign-in failed:", e.message);
+      console.error("Sign-in failed:", (e as Error).message);
       return page(res, 400, "Sign-in failed", `<p>Nextcloud sign-in did not complete. <a href="/auth/login">Try again</a>.</p>`);
     }
     if (allowedGroups.length && user.groups === null) {
@@ -264,7 +326,7 @@ export async function setupAuth(app) {
         `<p>You signed in as <strong>${escapeHtml(user.id)}</strong>, but that account isn't allowed to view these docs. Ask an administrator for access.</p>`);
     }
     console.log(`Signed in: ${user.id}`);
-    req.session.user = { id: user.id, name: user.name, exp: Date.now() + sessionHours * 3600 * 1000 };
+    req.session!.user = { id: user.id, name: user.name, exp: Date.now() + sessionHours * 3600 * 1000 } satisfies SessionUser;
     res.redirect(pending.returnTo);
   });
 
@@ -275,15 +337,18 @@ export async function setupAuth(app) {
 
   app.get("/auth/me", (req, res) => {
     const u = currentUser(req);
-    u ? res.json({ id: u.id, name: u.name }) : res.status(401).json({ error: "Not signed in" });
+    if (u) res.json({ id: u.id, name: u.name, logoutUrl: "/auth/logout" });
+    else res.status(401).json({ error: "Not signed in" });
   });
 
   // ---- Gate for everything registered after this ------------------------------
-  function requireLogin(req, res, next) {
+  // CI builds may fetch the spec and the generated stubs with SPEC_READ_TOKEN instead of a browser login.
+  const tokenPaths = new Set(["/openapi.yaml", "/openapi.json", "/export/ts-stubs.zip"]);
+
+  function requireLogin(req: Request, res: Response, next: NextFunction): void {
     if (currentUser(req)) return next();
 
-    // Lets a CI build fetch the spec without a browser login.
-    if (specReadToken && ["/openapi.yaml", "/openapi.json"].includes(req.path)) {
+    if (specReadToken && tokenPaths.has(req.path)) {
       const header = req.get("authorization") ?? "";
       if (header.startsWith("Bearer ") && safeEqual(header.slice(7), specReadToken)) return next();
     }

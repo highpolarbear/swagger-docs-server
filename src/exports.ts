@@ -1,11 +1,13 @@
 // Download routes: the spec as YAML or JSON, and a single-file offline copy of the docs.
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Express, Response } from "express";
 import YAML from "yaml";
 import swaggerUiDist from "swagger-ui-dist";
+import type { OpenApiDoc, SpecStore } from "./spec-store.js";
 
 const uiDir = swaggerUiDist.getAbsoluteFSPath();
-let uiAssets; // loaded once, on first offline export
+let uiAssets: { css: string; js: string } | undefined; // loaded once, on first offline export
 const loadUiAssets = async () =>
   (uiAssets ??= {
     css: await fs.readFile(path.join(uiDir, "swagger-ui.css"), "utf8"),
@@ -13,20 +15,20 @@ const loadUiAssets = async () =>
   });
 
 // "My API" + "0.1.0" -> "my-api-0.1.0"
-export function baseName(spec) {
-  const slug = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
+export function baseName(spec: OpenApiDoc | null | undefined): string {
+  const slug = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
   return [slug(spec?.info?.title) || "openapi", slug(spec?.info?.version)].filter(Boolean).join("-");
 }
 
-const escapeHtml = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+export const escapeHtml = (s: unknown): string =>
+  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 // JSON that is safe to place inside a <script> element
-const scriptSafeJson = (v) =>
+const scriptSafeJson = (v: unknown) =>
   JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 
-export function registerExportRoutes(app, store) {
-  const send = (res, type, body, filename, download) => {
+export function registerExportRoutes(app: Express, store: SpecStore): void {
+  const send = (res: Response, type: string, body: string, filename: string, download: boolean) => {
     res.set("Cache-Control", "private, no-store").type(type);
     if (download) res.attachment(filename);
     res.send(body);

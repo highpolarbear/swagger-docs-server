@@ -5,8 +5,8 @@ info:
   version: 0.1.0
   description: Design-first API specification. Routes are defined here before they are built.
 servers:
-  - url: http://localhost:8081
-    description: Local Spring Boot app
+  - url: http://localhost:3000
+    description: Local development server
 paths:
   /health:
     get:
